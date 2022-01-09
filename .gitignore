@@ -1,39 +1,85 @@
-# History files
-.Rhistory
-.Rapp.history
+#------------------Packages
 
-# Session Data files
-.RData
+library(GetDFPData2)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(ggthemes)
+library(ggpubr)
 
-# User-specific files
-.Ruserdata
+df_info <- get_info_companies(tempdir())
+search_company('Fleury', cache_folder = tempdir()) #Vale = 4170, Fleury=21881
 
-# Example code in package build process
-*-Ex.R
+#------------------Downloading DFP Data
 
-# Output files from R CMD build
-/*.tar.gz
+?get_dfp_data
+dfp <- get_dfp_data(companies_cvm_codes = 21881, use_memoise = FALSE, 
+                    clean_data = TRUE, cache_folder = tempdir(), type_docs = c('BPA', 'BPP'), 
+                    type_format = 'con', first_year = 2013, last_year = 2020)
 
-# Output files from R CMD check
-/*.Rcheck/
+#------------------Selecionar Colunas 
 
-# RStudio files
-.Rproj.user/
+str(dfp)
+head(dfp)
+glimpse(dfp)
+is.data.frame(dfp[["DF Consolidado - Demonstração do Resultado"]])
+Will <- dfp[["DF Consolidado - Balanço Patrimonial Ativo"]]
+Move <- dfp[["DF Consolidado - Balanço Patrimonial Passivo"]]
 
-# produced vignettes
-vignettes/*.html
-vignettes/*.pdf
+#------------------Selecionar Colunas 
 
-# OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
-.httr-oauth
+Will[, c("DT_FIM_EXERC", "DS_CONTA", "VL_CONTA")]
 
-# knitr and R markdown default cache directories
-*_cache/
-/cache/
+Hora <- select(Will, DT_FIM_EXERC, DS_CONTA, VL_CONTA)
+Vez <- select(Move, DT_FIM_EXERC, DS_CONTA, VL_CONTA)
 
-# Temporary files created by R markdown
-*.utf8.md
-*.knit.md
+head(Hora,20)
+head(Vez,20)
 
-# R Environment Variables
-.Renviron
+#------------------Managing Data
+
+Ativo_Circulante <- Hora %>%
+  filter(DS_CONTA == "Ativo Circulante")
+Passivo_Circulante <- Vez %>%
+  filter(DS_CONTA == "Passivo Circulante")
+
+head(Ativo_Circulante)
+head(Passivo_Circulante)
+
+Ativo_Circulante$ILC <- Ativo_Circulante$VL_CONTA/Passivo_Circulante$VL_CONTA 
+Passivo_Circulante$ILC <- Ativo_Circulante$`Valor em R$ mil`/Passivo_Circulante$VL_CONTA 
+
+Ativo_Circulante$`Ativo Circulante` <- Ativo_Circulante$`Ativo Circulante` * 1/1000
+Passivo_Circulante$`Passivo Circulante` <- Passivo_Circulante$`Passivo Circulante` * 1/1000
+
+colnames(Ativo_Circulante) <- c("Data", "Conta", "Ativo Circulante", "ILC")
+colnames(Passivo_Circulante) <- c("Data", "Conta", "Passivo Circulante", "ILC")
+
+
+#------------------Plot Data
+
+D5 <- ggplot(data= Merged, aes(x= Data)) + 
+  geom_area(aes(y=ILC), fill="#016c59", alpha=0.5) +
+  geom_line(aes(y=ILC), color="#016c59") +  
+  labs(title="Fleury S.A: Índice de Liquidez Corrente e Ativo Circulante x Passivo Circulante") + 
+  theme_solarized_2() + scale_y_continuous(name="Liquidez Corrente")
+
+D3<- ggplot(data= Merged, aes(x= Data)) + 
+  geom_col(aes(y=`Ativo Circulante`), fill="#045a8d", alpha=0.5) +
+  labs(title="Fleury S.A: Índice de Liquidez Corrente e Ativo Circulante x Passivo Circulante") + 
+  theme_solarized_2() + scale_y_continuous(name="em R$ Milhões") +
+  geom_col(data= Passivo_Circulante, aes(y=`Passivo Circulante`), 
+           fill="#b30000", alpha=0.5) 
+
+ggarrange(D5,D3)
+subplot(D5, D3, ncol(2), titleY = T, margin = 0.028)
+ggplotly(D5)
+
+head(Ativo_Circulante, 12)
+
+#------------------Merge Data Frame
+
+Merged <- merge(Ativo_Circulante, Passivo_Circulante, by= "Data")
+
+
