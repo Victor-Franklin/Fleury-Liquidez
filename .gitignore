@@ -1,3 +1,4 @@
+
 #------------------Packages
 
 library(GetDFPData2)
@@ -7,79 +8,325 @@ library(ggplot2)
 library(plotly)
 library(ggthemes)
 library(ggpubr)
+library(scales)
+library(hrbrthemes)
+
+#------------------Get Company
 
 df_info <- get_info_companies(tempdir())
-search_company('Fleury', cache_folder = tempdir()) #Vale = 4170, Fleury=21881
+search_company('Fleury', cache_folder = tempdir()) #21881
+
 
 #------------------Downloading DFP Data
 
-?get_dfp_data
-dfp <- get_dfp_data(companies_cvm_codes = 21881, use_memoise = FALSE, 
-                    clean_data = TRUE, cache_folder = tempdir(), type_docs = c('BPA', 'BPP'), 
-                    type_format = 'con', first_year = 2013, last_year = 2020)
-
-#------------------Selecionar Colunas 
-
-str(dfp)
-head(dfp)
-glimpse(dfp)
-is.data.frame(dfp[["DF Consolidado - Demonstração do Resultado"]])
-Will <- dfp[["DF Consolidado - Balanço Patrimonial Ativo"]]
-Move <- dfp[["DF Consolidado - Balanço Patrimonial Passivo"]]
-
-#------------------Selecionar Colunas 
-
-Will[, c("DT_FIM_EXERC", "DS_CONTA", "VL_CONTA")]
-
-Hora <- select(Will, DT_FIM_EXERC, DS_CONTA, VL_CONTA)
-Vez <- select(Move, DT_FIM_EXERC, DS_CONTA, VL_CONTA)
-
-head(Hora,20)
-head(Vez,20)
+DataFleury <- get_dfp_data(companies_cvm_codes = 21881, use_memoise = FALSE, 
+clean_data = TRUE, cache_folder = tempdir(), type_docs = c('BPA', 'BPP','DRE','DFC_MI'), 
+type_format = 'con', first_year = 2013, last_year = 2020)
 
 #------------------Managing Data
 
-Ativo_Circulante <- Hora %>%
-  filter(DS_CONTA == "Ativo Circulante")
-Passivo_Circulante <- Vez %>%
-  filter(DS_CONTA == "Passivo Circulante")
+# 1. Endividamento
+# 2. Liquidez
+# 3. Retorno
 
-head(Ativo_Circulante)
-head(Passivo_Circulante)
+DRE_STB <- DataFleury[["DF Consolidado - Demonstração do Resultado"]]
+BPA_STB <- DataFleury[["DF Consolidado - Balanço Patrimonial Ativo"]] 
+BPP_STB <- DataFleury[["DF Consolidado - Balanço Patrimonial Passivo"]]
+DFC_STB <- DataFleury[["DF Consolidado - Demonstração do Fluxo de Caixa (Método Indireto)"]]
 
-Ativo_Circulante$ILC <- Ativo_Circulante$VL_CONTA/Passivo_Circulante$VL_CONTA 
-Passivo_Circulante$ILC <- Ativo_Circulante$`Valor em R$ mil`/Passivo_Circulante$VL_CONTA 
+# 1. Endividamento
 
-Ativo_Circulante$`Ativo Circulante` <- Ativo_Circulante$`Ativo Circulante` * 1/1000
-Passivo_Circulante$`Passivo Circulante` <- Passivo_Circulante$`Passivo Circulante` * 1/1000
+End_STB <- select(BPP_STB, DT_FIM_EXERC, DS_CONTA, VL_CONTA)
+Passivo_Oneroso <- End_STB[End_STB$DS_CONTA=="Empréstimos e Financiamentos",]
+Patrimonio <- End_STB[End_STB$DS_CONTA=="Patrimônio Líquido Consolidado",]
+Passivo_Oneroso
+Erase_Duplicate <- Passivo_Oneroso %>% 
+  group_by(VL_CONTA) %>% filter (! duplicated(VL_CONTA)) #apagar duplicada
 
-colnames(Ativo_Circulante) <- c("Data", "Conta", "Ativo Circulante", "ILC")
-colnames(Passivo_Circulante) <- c("Data", "Conta", "Passivo Circulante", "ILC")
+Juntando <- aggregate(x= Erase_Duplicate$VL_CONTA,
+          by= list(Erase_Duplicate$DT_FIM_EXERC),  #unificar CP e LP (prazo)
+          FUN = sum)
+
+colnames(Juntando) <- c("Data", "Passivo Oneroso Total")
+colnames(Patrimonio) <- c("Data", "Conta", "PL")
+Merged
+
+Merged <- merge(Patrimonio, Juntando, by = "Data")
+Merged$Conta = NULL
+Merged$Endividamento <- Merged$`Passivo Oneroso Total` / 
+  (Merged$`Passivo Oneroso Total` + Merged$PL)  #% do Capital de Terceiros
+
+#Merged$Endividamento <- percent(x=Merged$Endividamento, digits=1)
+
+Merged$PL <- Merged$PL * 1/1000
+Merged$`Passivo Oneroso Total` <- Merged$`Passivo Oneroso Total` * 1/1000
+Merged
+colnames(Merged) <- c("Data", "Patrimônio Líquido", "Passivo Oneroso",
+                      "Endividamento")
+Merged$Endividamento <- round(Merged$Endividamento, digits = 2)
+Merged$`Patrimônio Líquido` <- round(Merged$`Patrimônio Líquido`, digits = 2)
+Merged$`Passivo Oneroso` <- round(Merged$`Passivo Oneroso`, digits = 2)
+Dívida <- Merged
+
+#-------Plot Endividamento
+
+D1 <- Merged %>%
+  ggplot(aes(x=Data, y=Endividamento)) + 
+  geom_line(color="#bf812d") +
+  geom_area(fill="#bf812d", alpha= 0.5) +
+  labs(title="Fleury SA: Nível de Endividamento - % Passivo Oneroso") +
+  theme_clean(base_size = 17) + coord_cartesian(ylim=c(0,0.8))
+
+D2 <- Merged %>%
+  ggplot(aes(x=Data)) +
+  geom_col(aes(y=`Patrimônio Líquido`), fill= "#045a8d", alpha=0.6) +
+  geom_col(aes(y=`Passivo Oneroso`), fill="#b30000", alpha=0.7) +
+  scale_y_continuous(name="em R$ Milhões") + theme_clean(base_size = 16)
+  
+G <- subplot(D2, D1, titleY = T, margin = 0.03)
+ggplotly(G)  
 
 
-#------------------Plot Data
+# 2. Liquidez
 
-D5 <- ggplot(data= Merged, aes(x= Data)) + 
-  geom_area(aes(y=ILC), fill="#016c59", alpha=0.5) +
-  geom_line(aes(y=ILC), color="#016c59") +  
-  labs(title="Fleury S.A: Índice de Liquidez Corrente e Ativo Circulante x Passivo Circulante") + 
-  theme_solarized_2() + scale_y_continuous(name="Liquidez Corrente")
+LQA_STB <- select(BPA_STB, DT_FIM_EXERC, DS_CONTA, VL_CONTA)
+LQB_STB <- select(BPP_STB, DT_FIM_EXERC, DS_CONTA, VL_CONTA)
+Ativo_Circulante <- LQA_STB[LQA_STB$DS_CONTA=="Ativo Circulante",]
+Passivo_Circulante <- LQB_STB[LQB_STB$DS_CONTA=="Passivo Circulante",]
+colnames(Ativo_Circulante) <- c("Data", "Conta", "Ativo Circulante")
+colnames(Passivo_Circulante) <- c("Data", "Conta", "Passivo Circulante")
 
-D3<- ggplot(data= Merged, aes(x= Data)) + 
-  geom_col(aes(y=`Ativo Circulante`), fill="#045a8d", alpha=0.5) +
-  labs(title="Fleury S.A: Índice de Liquidez Corrente e Ativo Circulante x Passivo Circulante") + 
-  theme_solarized_2() + scale_y_continuous(name="em R$ Milhões") +
-  geom_col(data= Passivo_Circulante, aes(y=`Passivo Circulante`), 
-           fill="#b30000", alpha=0.5) 
+Ativo_Circulante$Conta = NULL
+Passivo_Circulante$Conta = NULL
 
-ggarrange(D5,D3)
-subplot(D5, D3, ncol(2), titleY = T, margin = 0.028)
-ggplotly(D5)
+Unir <- merge(Ativo_Circulante, Passivo_Circulante, by= "Data")
+Unir$`Liquidez Corrente` <- Unir$`Ativo Circulante`/
+  Unir$`Passivo Circulante`
 
-head(Ativo_Circulante, 12)
+Unir$`Ativo Circulante` <- Unir$`Ativo Circulante` * 1/1000
+Unir$`Passivo Circulante` <- Unir$`Passivo Circulante` * 1/1000
 
-#------------------Merge Data Frame
+Unir$`Liquidez Corrente` <- round(Unir$`Liquidez Corrente`, 
+                                            digits = 2)
+Unir$`Ativo Circulante` <- round(Unir$`Ativo Circulante`, digits = 2)
+Unir$`Passivo Circulante` <- round(Unir$`Passivo Circulante`, digits = 2)
 
-Merged <- merge(Ativo_Circulante, Passivo_Circulante, by= "Data")
+Liq <- Unir
+
+#-------Plot Liquidez
+
+E1 <- Unir %>%
+  ggplot(aes(x=Data, y=`Liquidez Corrente`)) + 
+  geom_line(color="#bf812d") +
+  geom_area(fill="#bf812d", alpha= 0.5) +
+  labs(title="Fleury SA: Níveis de Endividamento Oneroso e Liquidez") +
+  theme_clean(base_size = 17) + coord_cartesian(ylim=c(0,5))
+
+E2 <- Unir %>%
+  ggplot(aes(x=Data)) +
+  geom_col(aes(y=`Ativo Circulante`), fill= "#045a8d", alpha=0.6) +
+  geom_col(aes(y=`Passivo Circulante`), fill="#b30000", alpha=0.7) +
+  scale_y_continuous(name="em R$ Milhões") + theme_clean(base_size = 16)
+
+G1 <- subplot(E2, E1, titleY = T, margin = 0.03)
+ggplotly(G1)  
+?theme_clean
+
+#plot Liquidez + Endividamento
+
+subplot(G, G1, nrows = 2, titleY = T, margin = 0.03) 
+
+Unir
+Merged
 
 
+# 3. Retorno
+
+Patrimonio # Vector já estava feito
+DRE1 <- select(DRE_STB, DT_FIM_EXERC, DS_CONTA, VL_CONTA )
+DRE2 <- DRE1[DRE1$DS_CONTA=="Resultado Líquido das Operações Continuadas",]
+DRE3 <- DRE1[DRE1$DS_CONTA=="Receita de Venda de Bens e/ou Serviços",]
+DRE4 <- DRE1[DRE1$DS_CONTA=="Custo dos Bens e/ou Serviços Vendidos",]
+DRE2$DS_CONTA = NULL
+DRE3$DS_CONTA = NULL
+DRE4$DS_CONTA = NULL
+
+colnames(DRE2) = c("Data", "Lucro Líquido")
+colnames(DRE3) = c("Data", "Receita Líquida")
+colnames(DRE4) = c("Data", "Custo")
+colnames(Patrimonio) = c("Data", "Conta", "Patrimonio Líquido")
+Mesclando <- merge(Patrimonio, DRE2, by="Data")
+Mesclando$Conta = NULL
+Mesclando$`Patrimonio Líquido` <- Mesclando$`Patrimonio Líquido` * 1/1000
+Mesclando$`Lucro Líquido` <- Mesclando$`Lucro Líquido` * 1/1000
+DRE3$`Receita Líquida` = DRE3$`Receita Líquida` * 1/1000
+DRE4$Custo = DRE4$Custo * 1/1000
+
+Cap_Social0 <- select(BPP_STB, DT_FIM_EXERC, DS_CONTA, VL_CONTA)
+Cap_Social1 <- Cap_Social0[Cap_Social0$DS_CONTA =="Capital Social Realizado",]
+Cap_Social1$DS_CONTA = NULL
+colnames(Cap_Social1) = c("Data", "Capital Social")
+Cap_Social1$`Capital Social` <- Cap_Social1$`Capital Social` * 1/1000 
+Cap_Social1$`Capital Social` <- round(Cap_Social1$`Capital Social`, digits=2) 
+
+# ROE
+
+Mesclando$`Return on Equity` <- Mesclando$`Lucro Líquido` / Mesclando$`Patrimonio Líquido`
+Mesclando$`Return on Equity` <- round(Mesclando$`Return on Equity`, digits=2)
+Mesclando$`Lucro Líquido` <- round(Mesclando$`Lucro Líquido`, digits = 2)
+Mesclando$ROE = NULL
+Mesclando$`Patrimonio Líquido` <- round(Mesclando$`Patrimonio Líquido`, digits = 2)
+Mesclando2 <- merge(Mesclando, Cap_Social1, by= "Data") 
+Mesclando2
+
+Return <- Mesclando
+
+#-------Plot Retorno
+
+F1 <- Mesclando %>%
+  ggplot(aes(x=Data, y=`Return on Equity`)) + 
+  geom_line(color="#bf812d") +
+  geom_area(fill="#bf812d", alpha= 0.5) +
+  labs(title="Fleury SA: Níveis de Endividamento Oneroso, Liquidez e Retorno") +
+  theme_clean(base_size = 17) + coord_cartesian(ylim=c(0,0.4))
+
+F2 <- Return %>%
+  ggplot(aes(x=Data)) +
+  geom_col(aes(y=`Receita Líquida`), fill= "#045a8d", alpha=0.6) +
+  geom_col(aes(y=Custo), fill="#b30000", alpha=0.7) +
+  geom_col(aes(y=`Lucro Líquido`), fill= "burlywood3", alpha=0.9) +
+  scale_y_continuous(name="em R$ Milhões") + theme_clean(base_size = 16)
+
+G2 <- subplot(F2, F1, titleY = T, margin = 0.03)
+
+subplot(G, G1, G2, nrows = 3, titleY = T, margin = 0.04)
+
+Dívida
+Liq
+Return
+
+# (outros) . Patrimônio Líquido Reinvestido na Companhia 
+
+DCash <- select(DFC_STB, DT_FIM_EXERC, DS_CONTA, VL_CONTA)
+FlowCash <- DCash[DCash$DS_CONTA == "Adições ao Ativo Imobilizado e Sistemas de Informática",]
+FlowCash1 <- DCash[DCash$DS_CONTA == "Aquisição de ativo imobilizado e intangível",]
+FlowCash2 <- DCash[DCash$DS_CONTA == "Aquisição de ativo Imobilizado e intangível",]
+
+FlowCash$VL_CONTA <- FlowCash$VL_CONTA * -1
+FlowCash1$VL_CONTA <- FlowCash1$VL_CONTA * -1
+FlowCash2$VL_CONTA <- FlowCash2$VL_CONTA * -1
+
+colnames(FlowCash) <- c("Data", "Conta", "Valor")
+colnames(FlowCash1) <- c("Data", "Conta", "Valor")
+colnames(FlowCash2) <- c("Data", "Conta", "Valor")
+
+FlowCash
+is.data.frame(FlowCash)
+
+
+# Managing Unequal Data Frame (with NA's)  - Problems with Merge
+
+test <- merge(FlowCash, FlowCash1, by="Data", all.x = TRUE, all.y = TRUE) #Filled NA's
+test$Conta.x=NULL
+test$Conta.y=NULL
+FlowCash2$Conta=NULL
+Alright <- merge(test, FlowCash2, by="Data", all.x = T, all.y = T) #Filled NA's
+
+Alright[is.na(Alright)] <- 1  #---------------------------------Replace "NA" to 1
+
+Alright$Capex = Alright$Valor.x * Alright$Valor.y * Alright$Valor #Creating new col
+
+Alright$Valor.x = NULL
+Alright$Valor.y = NULL
+Alright$Valor = NULL
+
+Capex <- Alright
+Capex
+
+#----------------------------------- Depreciação (Managing with Unequal Data Frames)
+
+Depreciation1 <- DCash[DCash$DS_CONTA == "Depreciações e Amortizações",]
+Depreciation2 <- DCash[DCash$DS_CONTA == "Depreciações e amortizações",]
+Depreciation1$DS_CONTA = NULL
+Depreciation2$DS_CONTA = NULL
+Depreciation = NULL
+colnames(Depreciation1) <- c("Data", "Depreciação1")
+colnames(Depreciation2) <- c("Data", "Depreciação2")
+
+test2 <- merge(Depreciation1, Depreciation2, by="Data", all.x = T, all.y = T)
+
+test2[is.na(test2)] <- 1  #------------------------------Replace "NA" to 1
+
+test2$Depreciação <- test2$Depreciação1 * test2$Depreciação2
+test2$Depreciação1 = NULL
+test2$Depreciação2 = NULL
+
+Depreciation <- test2
+
+Depreciation
+
+#----------------------------------- Now we're fine
+
+CashFlow <- merge(Capex, Depreciation, by= "Data")
+CashFlow$Capex <- CashFlow$Capex * 1/1000
+CashFlow$Depreciação <- CashFlow$Depreciação * 1/1000
+CashFlow$Capex <- round(CashFlow$Capex, digits = 2)
+CashFlow$Depreciação <- round(CashFlow$Depreciação, digits =2)
+
+CashFlow
+Return
+
+#------------------------------- Dividendos
+
+FlowCash3 <- DCash[DCash$DS_CONTA == "Juros Sobre o Capital Próprio e Dividendos",]
+FlowCash4 <- DCash[DCash$DS_CONTA == "Dividendos e/ou juros sobre capital próprio",]
+
+colnames(FlowCash3) <- c("Data", "Conta", "Dividendo")
+colnames(FlowCash4) <- c("Data", "Conta", "Dividendo")
+
+test3 <- merge(FlowCash3, FlowCash4, by="Data", all.x = TRUE, all.y = TRUE)
+test3$Conta.x = NULL
+test3$Conta.y = NULL
+
+test3[is.na(test3)] <- 1
+
+test3$Dividendo <- test3$Dividendo.x * test3$Dividendo.y
+test3$Dividendo <- test3$Dividendo * -1
+test3$Dividendo.x = NULL
+test3$Dividendo.y = NULL
+test3$Dividendo <- test3$Dividendo * 1/1000
+test3$Dividendo <- round(test3$Dividendo, digits = 2)
+
+CashFlow$CapitalGiro <- Liq$CCL
+
+Here <- merge(CashFlow, test3, by="Data")
+Here$`Lucro Líquido` <- Return$`Lucro Líquido`
+
+Return
+Return$`Receita Líquida` <- DRE3$`Receita Líquida`
+Return$`Receita Líquida` <- round(Return$`Receita Líquida`, digits = 2)
+Return$Custo <- DRE4$Custo
+Return$Custo <- Return$Custo * -1
+Return$Custo <- round(Return$Custo, digits = 2)
+Here$Payout <- Here$Dividendo / Here$`Lucro Líquido`
+Here$Payout <- round(Here$Payout, digits = 2)
+Here$`Taxa de Reinvest` <- 1 - Here$Payout 
+Here$`Taxa de Reinvest` <- round(Here$`Taxa de Reinvest`, digits = 2)
+Reinvest <- Here
+
+Reinvest    #------------------ Reinvestimento
+
+L2 <- Reinvest %>%
+  ggplot(aes(x=Data)) +
+  geom_col(aes(y=CapitalGiro), fill= "#045a8d", alpha=0.6) +
+  geom_col(aes(y=Capex), fill="#b30000", alpha=0.7) +
+  scale_y_continuous(name="em R$ Milhões") + theme_clean(base_size = 16)
+
+G2 <- subplot(L2, F1, titleY = T, margin = 0.03)
+
+subplot(G, G1, G2, nrows = 3, titleY = T, margin = 0.04)
+
+Dívida
+Return
+Liquidez
+Reinvest
